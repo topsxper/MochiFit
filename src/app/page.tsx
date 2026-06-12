@@ -1,0 +1,588 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import { supabase } from "@/lib/supabase";
+import AuthScreen from "@/components/AuthScreen";
+import BottomNav from "@/components/BottomNav";
+import MascotBanner from "@/components/MascotBanner";
+import CalculatorForm from "@/components/CalculatorForm";
+import MealLogger from "@/components/MealLogger";
+import HealthJourney from "@/components/HealthJourney";
+import CircularProgressBar from "@/components/CircularProgressBar";
+import WaterTracker from "@/components/WaterTracker";
+import { Sparkles, Heart, Ruler, Scale, ArrowRight, Activity, Trophy } from "lucide-react";
+import { playClickSound } from "@/lib/sound";
+
+type TabType = "dashboard" | "calculator" | "logger" | "journey";
+
+interface ProfileData {
+  id?: string;
+  name: string;
+  age: number;
+  gender: string;
+  height: number;
+  weight: number;
+  activity_level: string;
+  bmi: number;
+  bmr: number;
+  tdee: number;
+  body_fat: number;
+}
+
+const ACTIVITIES = [
+  { id: "walking", name: "เดินเล่น", icon: "🚶‍♀️", met: 3.0 },
+  { id: "jogging", name: "วิ่งเหยาะๆ", icon: "🏃‍♀️", met: 7.0 },
+  { id: "cycling", name: "ปั่นจักรยาน", icon: "🚴‍♀️", met: 5.5 },
+  { id: "swimming", name: "ว่ายน้ำ", icon: "🏊‍♀️", met: 6.0 },
+  { id: "dancing", name: "เต้นซุมบ้า", icon: "💃", met: 6.5 },
+  { id: "yoga", name: "โยคะ", icon: "🧘‍♀️", met: 2.5 },
+  { id: "jumprope", name: "กระโดดเชือก", icon: "🪢", met: 9.0 },
+  { id: "weight", name: "เวทเทรนนิ่ง", icon: "🏋️‍♀️", met: 3.5 },
+];
+
+export default function Home() {
+  const [session, setSession] = useState<import("@supabase/supabase-js").Session | null>(null);
+  const [isGuest, setIsGuest] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [activeTab, setActiveTab] = useState<TabType>("dashboard");
+  const [profile, setProfile] = useState<ProfileData | null>(null);
+  const [todayCalories, setTodayCalories] = useState(0);
+  const [todayProtein, setTodayProtein] = useState(0);
+  const [todayCarbs, setTodayCarbs] = useState(0);
+  const [todayFat, setTodayFat] = useState(0);
+  const [refreshTrigger, setRefreshTrigger] = useState(0);
+  
+  // Dynamic achievements, water stats, and active exercise
+  const [todayMeals, setTodayMeals] = useState<any[]>([]);
+  const [waterCups, setWaterCups] = useState<boolean[]>(Array(8).fill(false));
+  const [selectedActivity, setSelectedActivity] = useState<string>("walking");
+
+  const fetchWaterIntake = (userId: string) => {
+    const today = new Date().toLocaleDateString("en-CA");
+    const storageKey = `water_${userId}_${today}`;
+    const saved = localStorage.getItem(storageKey);
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved) as boolean[];
+        if (Array.isArray(parsed) && parsed.length === 8) {
+          setWaterCups(parsed);
+          return;
+        }
+      } catch {}
+    }
+    setWaterCups(Array(8).fill(false));
+  };
+
+  const fetchProfile = async (userId: string) => {
+    try {
+      const { data, error } = await supabase
+        .from("profiles")
+        .select("*")
+        .eq("id", userId)
+        .single();
+
+      if (error) {
+        if (error.code !== "PGRST116") {
+          console.warn("Table 'profiles' not ready or error fetching. Using local backup.");
+        }
+        // Load fallback from localStorage
+        const local = localStorage.getItem(`profile_${userId}`);
+        if (local) {
+          setProfile(JSON.parse(local));
+        } else {
+          setProfile(null);
+        }
+      } else if (data) {
+        setProfile(data);
+        localStorage.setItem(`profile_${userId}`, JSON.stringify(data));
+      }
+    } catch (err) {
+      console.error("Error fetching profile:", err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const fetchTodayStats = async (userId: string) => {
+    try {
+      const startOfToday = new Date();
+      startOfToday.setHours(0, 0, 0, 0);
+
+      fetchWaterIntake(userId); // Load today's water status
+
+      const { data, error } = await supabase
+        .from("meal_logs")
+        .select("*")
+        .eq("user_id", userId)
+        .gte("created_at", startOfToday.toISOString());
+
+      if (error) {
+        console.warn("Table 'meal_logs' not ready or error. Using local backup.");
+        // Try fallback from localStorage
+        const local = localStorage.getItem(`meals_${userId}`);
+        if (local) {
+          const meals = JSON.parse(local) as any[];
+          const todayMealsList = meals.filter(m => {
+            const date = new Date(m.created_at || new Date());
+            return date >= startOfToday;
+          });
+          setTodayMeals(todayMealsList);
+          const cal = todayMealsList.reduce((acc, m) => acc + (m.calories || 0), 0);
+          const p = todayMealsList.reduce((acc, m) => acc + (m.protein || 0), 0);
+          const c = todayMealsList.reduce((acc, m) => acc + (m.carbs || 0), 0);
+          const f = todayMealsList.reduce((acc, m) => acc + (m.fat || 0), 0);
+          setTodayCalories(cal);
+          setTodayProtein(p);
+          setTodayCarbs(c);
+          setTodayFat(f);
+        } else {
+          setTodayMeals([]);
+          setTodayCalories(0);
+          setTodayProtein(0);
+          setTodayCarbs(0);
+          setTodayFat(0);
+        }
+      } else if (data) {
+        setTodayMeals(data);
+        const cal = data.reduce((acc, log) => acc + (log.calories || 0), 0);
+        const p = data.reduce((acc, log) => acc + (log.protein || 0), 0);
+        const c = data.reduce((acc, log) => acc + (log.carbs || 0), 0);
+        const f = data.reduce((acc, log) => log.fat ? acc + log.fat : acc, 0);
+        setTodayCalories(cal);
+        setTodayProtein(p);
+        setTodayCarbs(c);
+        setTodayFat(f);
+      }
+    } catch (err) {
+      console.error("Error fetching today stats:", err);
+    }
+  };
+
+  useEffect(() => {
+    // Force loading to false after 2 seconds to support local fallback if Supabase is blocked
+    const timer = setTimeout(() => {
+      setLoading((prev) => {
+        if (prev) {
+          console.warn("Supabase init timed out. Switching to offline/local fallback.");
+          return false;
+        }
+        return prev;
+      });
+    }, 2000);
+
+    // Check initial session
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      clearTimeout(timer);
+      setSession(session);
+      if (session) {
+        fetchProfile(session.user.id);
+        fetchTodayStats(session.user.id);
+      } else {
+        setLoading(false);
+      }
+    }).catch((err) => {
+      clearTimeout(timer);
+      console.warn("Supabase session load failed:", err);
+      setLoading(false);
+    });
+
+    // Listen for auth changes
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      clearTimeout(timer);
+      setSession(session);
+      if (session) {
+        fetchProfile(session.user.id);
+        fetchTodayStats(session.user.id);
+      } else {
+        setProfile(null);
+        setTodayCalories(0);
+        setTodayProtein(0);
+        setTodayCarbs(0);
+        setTodayFat(0);
+        setLoading(false);
+      }
+    });
+
+    return () => {
+      clearTimeout(timer);
+      subscription.unsubscribe();
+    };
+  }, [refreshTrigger]);
+
+  // Load guest data if isGuest becomes true
+  useEffect(() => {
+    if (isGuest) {
+      setTimeout(() => {
+        fetchProfile("guest");
+        fetchTodayStats("guest");
+      }, 0);
+    }
+  }, [isGuest]);
+
+  const handleLogout = async () => {
+    if (isGuest) {
+      setIsGuest(false);
+      setProfile(null);
+      setTodayCalories(0);
+      setTodayProtein(0);
+      setTodayCarbs(0);
+      setTodayFat(0);
+    } else {
+      await supabase.auth.signOut();
+    }
+  };
+
+  const handleProfileSave = (updatedProfile: ProfileData) => {
+    setProfile(updatedProfile);
+    const userId = session?.user?.id || "guest";
+    localStorage.setItem(`profile_${userId}`, JSON.stringify(updatedProfile));
+    setRefreshTrigger(prev => prev + 1);
+  };
+
+  const handleMealAdded = () => {
+    const userId = session?.user?.id || "guest";
+    fetchTodayStats(userId);
+  };
+
+  if (loading) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-screen bg-soft-cream-base font-sans select-none">
+        <span className="w-10 h-10 border-4 border-healthy-green-primary border-t-transparent rounded-full animate-spin" />
+        <span className="text-sm font-bold text-healthy-green-dark/60 mt-4 animate-pulse">
+          กำลังเตรียมความคิ้วท์ให้คุณ... 🐰✨
+        </span>
+      </div>
+    );
+  }
+
+  if (!session && !isGuest) {
+    return (
+      <AuthScreen 
+        onAuthSuccess={() => setRefreshTrigger(prev => prev + 1)} 
+        onGuestLogin={() => setIsGuest(true)}
+      />
+    );
+  }
+
+  const budget = profile?.tdee || 2000;
+
+  // Calculate personalized calorie burning time
+  const userWeight = profile?.weight || 60;
+  const activeMET = ACTIVITIES.find(a => a.id === selectedActivity)?.met || 3.0;
+  const caloriesPerMin = (activeMET * 3.5 * userWeight) / 200;
+  const minutesNeeded = todayCalories > 0 ? Math.ceil(todayCalories / caloriesPerMin) : 0;
+  const selectedActivityObj = ACTIVITIES.find(a => a.id === selectedActivity) || ACTIVITIES[0];
+
+  return (
+    <div className="min-h-screen bg-soft-cream-base text-healthy-green-dark font-sans select-none md:p-6 pb-24 md:pb-6">
+      <div className="w-full max-w-4xl mx-auto px-4 md:px-0">
+        
+        {/* Navigation & Header */}
+        <BottomNav 
+          activeTab={activeTab} 
+          setActiveTab={setActiveTab} 
+          onLogout={handleLogout}
+          userName={profile?.name}
+        />
+
+        {/* Tab Router Content */}
+        <main className="mt-6">
+          {activeTab === "dashboard" && (
+            <div className="space-y-6">
+              {/* Cute Mascot Greeting */}
+              <MascotBanner 
+                profileName={profile?.name} 
+                todayCalories={todayCalories}
+                budget={budget}
+                customText={
+                  todayCalories > budget 
+                    ? `อุ๊ย! คุณกินพลังงานเกิน TDEE ไปนิดนึงแล้วน้า วันนี้ลองไปขยับตัวเต้นระบำกระต่ายออกกำลังกายกันเถอะค่ะ 🐰💃` 
+                    : undefined
+                }
+              />
+
+              {/* Top Summary Card (Responsive: 1 col on mobile, 2 col on desktop) */}
+              <div className="grid grid-cols-1 md:grid-cols-12 gap-6 items-stretch">
+                
+                {/* User Info Overview */}
+                <div className="md:col-span-6 bg-white border-4 border-healthy-green-light rounded-3xl p-6 shadow-sm flex flex-col justify-between relative overflow-hidden">
+                  <div className="absolute -top-6 -right-6 w-16 h-16 bg-kawaii-pink-light rounded-full opacity-60 pointer-events-none" />
+                  
+                  <div>
+                    <h3 className="text-lg font-black text-healthy-green-dark flex items-center gap-1.5 mb-4">
+                      <Heart className="w-5 h-5 text-kawaii-pink-primary fill-kawaii-pink-primary" />
+                      <span>ข้อมูลสุขภาพปัจจุบัน</span>
+                    </h3>
+
+                    {profile ? (
+                      <div className="space-y-4">
+                        <div className="flex justify-between items-center border-b border-soft-cream-dark pb-2">
+                          <span className="text-sm font-bold text-healthy-green-dark/60">ชื่อ (Name)</span>
+                          <span className="text-base font-extrabold text-healthy-green-dark">{profile.name}</span>
+                        </div>
+                        <div className="flex justify-between items-center border-b border-soft-cream-dark pb-2">
+                          <span className="text-sm font-bold text-healthy-green-dark/60">อายุ (Age)</span>
+                          <span className="text-base font-extrabold text-healthy-green-dark">{profile.age} ปี</span>
+                        </div>
+                        <div className="grid grid-cols-2 gap-4">
+                          <div className="flex items-center gap-2 bg-soft-cream-base rounded-2xl p-3 border border-soft-cream-dark">
+                            <Ruler className="w-4 h-4 text-healthy-green-primary" />
+                            <div>
+                              <span className="block text-[10px] font-bold text-healthy-green-dark/50 leading-none">ส่วนสูง</span>
+                              <span className="text-sm font-extrabold text-healthy-green-dark">{profile.height} ซม.</span>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2 bg-soft-cream-base rounded-2xl p-3 border border-soft-cream-dark">
+                            <Scale className="w-4 h-4 text-kawaii-pink-primary" />
+                            <div>
+                              <span className="block text-[10px] font-bold text-healthy-green-dark/50 leading-none">น้ำหนัก</span>
+                              <span className="text-sm font-extrabold text-healthy-green-dark">{profile.weight} กก.</span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="text-center py-6">
+                        <p className="text-sm font-bold text-healthy-green-dark/50 mb-4">ยังไม่ได้กรอกข้อมูลสุขภาพเลยค่ะ 🥺</p>
+                        <button
+                          onClick={() => setActiveTab("calculator")}
+                          className="px-4 py-2 bg-healthy-green-primary hover:bg-healthy-green-dark text-white rounded-2xl text-xs font-bold transition-all transform hover:scale-105 active:scale-95 flex items-center gap-1.5 mx-auto cursor-pointer"
+                        >
+                          <span>ไปวิเคราะห์กันเลย</span>
+                          <ArrowRight className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
+                  {profile && (
+                    <div className="mt-6 pt-4 border-t border-soft-cream-dark flex items-center justify-between">
+                      <div className="flex items-center gap-1 text-xs font-bold text-healthy-green-dark/60">
+                        <span>ดัชนีมวลกาย BMI: </span>
+                        <span className="text-sm font-black text-healthy-green-primary">{profile.bmi}</span>
+                      </div>
+                      <button
+                        onClick={() => setActiveTab("calculator")}
+                        className="text-xs font-bold text-kawaii-pink-primary hover:text-kawaii-pink-dark cursor-pointer underline underline-offset-2"
+                      >
+                        แก้ไขข้อมูลส่วนตัว
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {/* Calorie Stats Circle Recap */}
+                <div className="md:col-span-6 bg-white border-4 border-healthy-green-light rounded-3xl p-6 shadow-sm flex flex-col items-center justify-between">
+                  <h3 className="text-lg font-black text-healthy-green-dark text-center w-full mb-1 flex items-center justify-center gap-1.5">
+                    <Activity className="w-4 h-4 text-healthy-green-primary" />
+                    <span>พลังงานที่ได้รับในวันนี้</span>
+                  </h3>
+                  
+                  <CircularProgressBar value={todayCalories} target={budget} />
+                  
+                  {/* Macro details */}
+                  <div className="grid grid-cols-3 gap-2 w-full text-center mt-2">
+                    <div className="bg-[#e3f2fd] border border-[#bbdefb] rounded-xl py-1 px-2">
+                      <span className="block text-[9px] font-bold text-blue-700">โปรตีน</span>
+                      <span className="text-xs font-extrabold text-blue-900">{todayProtein.toFixed(1)}g</span>
+                    </div>
+                    <div className="bg-butter-yellow-light border border-butter-yellow-primary/30 rounded-xl py-1 px-2">
+                      <span className="block text-[9px] font-bold text-butter-yellow-dark">คาร์โบไฮเดรต</span>
+                      <span className="text-xs font-extrabold text-healthy-green-dark">{todayCarbs.toFixed(1)}g</span>
+                    </div>
+                    <div className="bg-kawaii-pink-light border border-kawaii-pink-primary/30 rounded-xl py-1 px-2">
+                      <span className="block text-[9px] font-bold text-kawaii-pink-dark">ไขมัน</span>
+                      <span className="text-xs font-extrabold text-kawaii-pink-dark">{todayFat.toFixed(1)}g</span>
+                    </div>
+                  </div>
+                </div>
+
+              </div>
+
+              {/* Water Tracker & Achievements suggestions */}
+              <div className="grid grid-cols-1 md:grid-cols-12 gap-6 items-stretch">
+                
+                {/* Water tracker column */}
+                <div className="md:col-span-6">
+                  <WaterTracker />
+                </div>
+
+                {/* Achievements and activities */}
+                <div className="md:col-span-6 bg-white border-4 border-healthy-green-light rounded-3xl p-6 shadow-sm flex flex-col justify-between relative overflow-hidden">
+                  <div className="absolute -top-6 -right-6 w-16 h-16 bg-butter-yellow-light rounded-full opacity-60 pointer-events-none" />
+                  
+                  <div>
+                    <h3 className="text-lg font-black text-healthy-green-dark flex items-center gap-1.5 mb-4">
+                      <Trophy className="w-5 h-5 text-butter-yellow-dark fill-butter-yellow-light" />
+                      <span>เหรียญรางวัลวันนี้ 🏆</span>
+                    </h3>
+                    
+                    {/* Badge grid */}
+                    <div className="grid grid-cols-4 gap-2 text-center mb-6">
+                      {/* Badge 🥦 Greens */}
+                      <div 
+                        className={`p-2 rounded-2xl border transition-all duration-300 transform ${
+                          todayMeals.some(m => 
+                            m.meal_name.includes("ผัก") || 
+                            m.meal_name.includes("สลัด") || 
+                            m.meal_name.toLowerCase().includes("salad") || 
+                            m.meal_name.toLowerCase().includes("veggie")
+                          )
+                            ? "bg-healthy-green-light border-healthy-green-primary text-healthy-green-dark scale-105 shadow-md shadow-healthy-green-light/40 font-bold" 
+                            : "bg-soft-cream-light border-soft-cream-dark opacity-40 text-healthy-green-dark/40"
+                        }`}
+                        title="กินผัก/สลัดวันนี้"
+                      >
+                        <span className="text-2xl block mb-1">🥦</span>
+                        <span className="text-[9px] font-black leading-none block truncate">รักสุขภาพ</span>
+                      </div>
+
+                      {/* Badge 🥩 Protein */}
+                      <div 
+                        className={`p-2 rounded-2xl border transition-all duration-300 transform ${
+                          todayMeals.some(m => 
+                            m.meal_name.includes("อกไก่") || 
+                            m.meal_name.includes("ไข่ต้ม") || 
+                            m.meal_name.includes("เต้าหู้") || 
+                            m.meal_name.includes("ปลา") || 
+                            m.meal_name.toLowerCase().includes("egg") || 
+                            m.meal_name.toLowerCase().includes("protein") || 
+                            m.meal_name.toLowerCase().includes("chicken")
+                          ) || todayProtein >= 50
+                            ? "bg-[#e3f2fd] border-blue-300 text-blue-800 scale-105 shadow-md shadow-blue-100 font-bold" 
+                            : "bg-soft-cream-light border-soft-cream-dark opacity-40 text-healthy-green-dark/40"
+                        }`}
+                        title="เติมโปรตีนชั้นยอด"
+                      >
+                        <span className="text-2xl block mb-1">🥩</span>
+                        <span className="text-[9px] font-black leading-none block truncate">กล้ามแน่น</span>
+                      </div>
+
+                      {/* Badge 💧 Water */}
+                      <div 
+                        className={`p-2 rounded-2xl border transition-all duration-300 transform ${
+                          waterCups.filter(Boolean).length === 8
+                            ? "bg-blue-50 border-blue-300 text-blue-700 scale-105 shadow-md shadow-blue-100 font-bold" 
+                            : "bg-soft-cream-light border-soft-cream-dark opacity-40 text-healthy-green-dark/40"
+                        }`}
+                        title="ดื่มน้ำครบ 8 แก้ว"
+                      >
+                        <span className="text-2xl block mb-1">💧</span>
+                        <span className="text-[9px] font-black leading-none block truncate">ผิวเด้งใส</span>
+                      </div>
+
+                      {/* Badge 🎯 Calorie budget */}
+                      <div 
+                        className={`p-2 rounded-2xl border transition-all duration-300 transform ${
+                          todayCalories > 0 && todayCalories <= budget
+                            ? "bg-kawaii-pink-light border-kawaii-pink-primary text-kawaii-pink-dark scale-105 shadow-md shadow-kawaii-pink-light/40 font-bold" 
+                            : "bg-soft-cream-light border-soft-cream-dark opacity-40 text-healthy-green-dark/40"
+                        }`}
+                        title="แคลอรี่ไม่เกินเป้า TDEE"
+                      >
+                        <span className="text-2xl block mb-1">🎯</span>
+                        <span className="text-[9px] font-black leading-none block truncate">คุมแคลสำเร็จ</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Calorie burning suggestions */}
+                  <div className="border-t border-soft-cream-dark pt-4 select-none">
+                    <h4 className="text-xs font-black text-healthy-green-dark/70 mb-2.5 flex items-center gap-1">
+                      <span>🏃‍♀️ เลือกกิจกรรมคำนวณการเผาผลาญ ({todayCalories} kcal)</span>
+                    </h4>
+                    
+                    {/* Activity selection buttons grid */}
+                    <div className="grid grid-cols-4 gap-1.5 mb-3">
+                      {ACTIVITIES.map((act) => (
+                        <button
+                          key={act.id}
+                          onClick={() => {
+                            setSelectedActivity(act.id);
+                            playClickSound();
+                          }}
+                          className={`p-1.5 rounded-xl border text-center transition-all cursor-pointer ${
+                            selectedActivity === act.id
+                              ? "bg-healthy-green-light border-healthy-green-primary text-healthy-green-dark scale-105 shadow-sm font-black"
+                              : "bg-soft-cream-light border-soft-cream-dark hover:border-healthy-green-medium/30 text-healthy-green-dark/60"
+                          }`}
+                          title={act.name}
+                        >
+                          <span className="text-xl block mb-0.5">{act.icon}</span>
+                          <span className="text-[8px] block font-bold leading-none truncate">{act.name}</span>
+                        </button>
+                      ))}
+                    </div>
+
+                    {/* Calculated output box */}
+                    <div className="bg-soft-cream-base border border-soft-cream-dark p-3 rounded-2xl text-center">
+                      {todayCalories > 0 ? (
+                        <>
+                          <p className="text-[10px] font-bold text-healthy-green-dark/60 leading-none">
+                            คุณต้องทำกิจกรรมนี้เป็นเวลา
+                          </p>
+                          <p className="text-2xl font-black text-healthy-green-primary my-1 animate-pulse">
+                            {minutesNeeded} นาที
+                          </p>
+                          <p className="text-[10px] font-bold text-healthy-green-dark/70">
+                            ถึงจะสลัดไขมัน {selectedActivityObj.icon} {selectedActivityObj.name} คืนนี้ได้หมดฟิตแอนด์เฟิร์มค่ะ! 🐰✨
+                          </p>
+                        </>
+                      ) : (
+                        <p className="text-xs font-bold text-healthy-green-dark/40 py-2">
+                          ยังไม่มีแคลอรี่ให้เผาผลาญในวันนี้เลยค่ะ ทานอาหารอร่อยๆ กันก่อนน้า 🥗🐰
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+              </div>
+
+              {/* Action Buttons Link Card */}
+              <div className="bg-white border-4 border-healthy-green-light rounded-3xl p-6 shadow-sm flex flex-col sm:flex-row justify-between items-center gap-4">
+                <div className="flex items-center gap-2">
+                  <span className="text-xl">🐰</span>
+                  <div>
+                    <span className="block text-sm font-black text-healthy-green-dark">ทานมื้อไหนไปบ้างหรือยังคะ?</span>
+                    <span className="text-xs font-bold text-healthy-green-dark/60">คลิกบันทึกและคำนวณอาหารทุกๆ วันเพื่อสุขภาพที่ดีกันเถอะ</span>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setActiveTab("logger")}
+                  className="px-6 py-3 bg-healthy-green-primary hover:bg-healthy-green-dark text-white rounded-2xl font-black text-sm transition-all transform hover:scale-105 active:scale-95 shadow-md shadow-healthy-green-primary/10 flex items-center gap-1.5 cursor-pointer w-full sm:w-auto justify-center"
+                >
+                  <Sparkles className="w-4 h-4 fill-white" />
+                  <span>บันทึกมื้ออาหารวันนี้</span>
+                </button>
+              </div>
+
+            </div>
+          )}
+
+          {activeTab === "calculator" && (
+            <CalculatorForm 
+              key={profile?.id || "new"}
+              initialProfile={profile} 
+              onProfileSave={handleProfileSave} 
+            />
+          )}
+
+          {activeTab === "logger" && (
+            <MealLogger 
+              tdeeTarget={budget} 
+              onMealAdded={handleMealAdded}
+            />
+          )}
+
+          {activeTab === "journey" && (
+            <HealthJourney 
+              currentWeight={profile?.weight || 50} 
+            />
+          )}
+        </main>
+
+      </div>
+    </div>
+  );
+}
